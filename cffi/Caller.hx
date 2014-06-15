@@ -37,9 +37,9 @@ class Caller
       return e.getValue();
    }
 
-   public static function codeToComplexType(code:String) : ComplexType
+   public static function codeToComplexType(code:String,inCppNative:Bool) : ComplexType
    {
-      if (!Context.defined("cpp"))
+      if (!inCppNative)
          switch(code)
          {
             case "f" : code = "d";
@@ -58,7 +58,7 @@ class Caller
          case "f" : return TPath( { pack:["cpp"], name:"Float32" } );
          case "v" : return TPath( { pack:["cpp"], name:"Void" } );
          case "c" :
-             if (Context.defined("cpp"))
+             if (inCppNative)
                 return TPath( { pack:["cpp"], name:"RawConstPtr",
                       params: [TPType( TPath( { pack:["cpp"], name:"Char" } ) )  ] } );
              throw "const char * type only supported on cpp target";
@@ -67,7 +67,40 @@ class Caller
 
       }
       return null;
-      
+   }
+
+   public static function codeToCppType(code:String) : String
+   {
+      switch(code)
+      {
+         case "b" : return "bool";
+         case "i" : return "int";
+         case "d" : return "double";
+         case "s" : return "::String";
+         case "o" : return "::hx::Object *";
+         case "f" : return "float";
+         case "v" : return "void";
+         case "c" : return "const char *";
+         default:
+             throw "Unknown signature type :'" + code + "' valid types: b,i,d,s,f,o,v,c";
+      }
+      return null;
+   }
+
+
+
+   public static function createTFunction(inSig:String)
+   {
+      var args = new Array<ComplexType>();
+      var parts = inSig.split("");
+      if (parts.length==0)
+          throw "no return type specified";
+      var isCpp = Context.defined("cpp");
+      var ret = codeToComplexType(parts.pop(),isCpp);
+      for(p in parts)
+         args.push( codeToComplexType(p,isCpp) );
+
+      return TFunction(args,ret); 
    }
 
    public static function createCffiVar(inPrim:String, inDll:String, inSig:String)
@@ -75,15 +108,20 @@ class Caller
       var e:Expr = null;
       var type:ComplexType = null;
 
-      var args = new Array<ComplexType>();
-      var parts = inSig.split("");
-      if (parts.length==0)
-          throw "no return type specified";
-      var ret = codeToComplexType(parts.pop());
-      for(p in parts)
-         args.push( codeToComplexType(p) );
+      var tfunction = createTFunction(inSig);
 
-      return FVar( TPath( { pack:["cffi"], name:"Callable", params:[TPType(TFunction(args,ret))]}), e );
+      return FVar( tfunction, e );
+   }
+
+   public static function createCppNativeMeta(inSig:String,inName) : String
+   {
+      var parts = inSig.split("");
+      var ret = codeToCppType(parts.pop());
+      var args = [];
+      for(p in parts)
+         args.push( codeToCppType(p) );
+
+      return ret + " (*" + inName + "_decl)(" + args.join(",") + ")";
    }
 
    public static function transform(field:Field):Field
@@ -105,7 +143,7 @@ class Caller
 
             if (field.meta!=null)
                for(meta in field.meta)
-                  if (meta.name=="cffi" && meta.params!=null)
+                  if (meta.name==":cffi" && meta.params!=null)
                   {
                      if (meta.params.length>0)
                         cffi = metaString(meta.params[0]);
@@ -116,7 +154,24 @@ class Caller
                      break;
                  }
             if (cffi!=null)
+            {
+               var nativeKey:String = null;
+               var nativeMeta:String = null;
+               if (Context.defined("cpp"))
+               {
+                  nativeKey = ":decl";
+                  nativeMeta = createCppNativeMeta(cffi,field.name);
+               }
+
+               if (nativeMeta!=null)
+               {
+                  field.meta.push( { name:nativeKey,
+                    params:[ {expr:EConst(CString(nativeMeta)), pos:Context.currentPos()} ],
+                    pos:Context.currentPos() } );
+                  field.meta.push( { name:":unreflective", pos:Context.currentPos() } );
+               }
                field.kind = createCffiVar(prim, dll, cffi);
+            }
          default:
       }
 
